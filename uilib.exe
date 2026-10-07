@@ -1,64 +1,128 @@
 --[[
-    AnimeZeroLib  -  ไลบรารี GUI สไตล์ Anime Zero (ดำ-ชมพู)
-    ไฟล์นี้มีแค่ "ตัวสร้าง GUI" ไม่มีระบบเกมอยู่ข้างใน
+    AnimeZeroLib v2  -  ไลบรารี GUI สไตล์ Anime Zero (ดำ-ชมพู)
+    ไฟล์นี้มีแค่ "ตัวสร้าง GUI + ระบบ Config/Theme" ไม่มีระบบเกมอยู่ข้างใน
     โหลดใช้ด้วย:  local Library = loadstring(game:HttpGet("URL"))()
 
-    API
-    ---------------------------------------------------------------
-    Library:CreateWindow({ Title, Version, GameLabel, Size, ToggleKey })      -> Window
-    Window:AddTab({ Title, Icon, Columns })                                  -> Tab        (Columns = 1 หรือ 2)
-    Window:SelectTab("ชื่อแท็บ")   Window:Toggle()   Window:Destroy()
-    Window:Notify({ Title, Content, Duration })
+    ── สร้าง GUI ───────────────────────────────────────────────────
+    Library:CreateWindow({ Title, Version, GameLabel, Size, ToggleKey })     -> Window
+    Window:AddTab({ Title, Icon, Columns })                                 -> Tab   (Columns = 1 หรือ 2)
+    Window:SelectTab("ชื่อ")  Window:Toggle()  Window:Destroy()  Window:Notify({ Title, Content, Duration })
+    Window:BuildSettings(Tab)        -- สร้างหน้า Settings ครบ (Menu / Configs / Themes)
 
     Tab:AddSection("ชื่อ", { Side = "Left"|"Right", Collapsed = false, Header = true }) -> Section
-    Tab:AddSubTab("ชื่อ")                                                    -> SubTab (ใช้ AddSection ได้เหมือน Tab)
+    Tab:AddSubTab("ชื่อ")            -> SubTab (ใช้ AddSection ได้เหมือน Tab)
 
     Section:AddToggle(id, { Title, Default, Callback })
     Section:AddSlider(id, { Title, Min, Max, Default, Suffix, Callback })
     Section:AddDropdown(id, { Title, Values, Multi, Default, Callback })
     Section:AddButton({ Title, Callback })
-    Section:AddInput(id, { Title, Default, Placeholder, Callback })
-    Section:AddInfo({ Title, Value })            -> { SetValue }
-    Section:AddParagraph({ Title, Content })     -> { SetDesc }
-    Section:AddProfile({ Title, Subtitle })      (กล่องโปรไฟล์ผู้เล่น)
-    Section:AddStats({ "FPS", "PING" })          -> labelA, labelB  (ตั้ง .Text เองได้)
-    Section:AddButtonRow({ { Title, Callback }, ... })
+    Section:AddButtonRow({ { Title, Callback, Color }, ... })
+    Section:AddInput(id, { Title, Default, Placeholder, Finished, Callback, Button = { Title, Callback } })
+    Section:AddKeybind(id, { Title, Default = "RightControl", Callback })
+    Section:AddColorPicker(id, { Title, Default = Color3, Callback })
+    Section:AddInfo / AddParagraph / AddLabel / AddDivider / AddProfile / AddStats
 
-    Library.Options[id].Value   อ่านค่าได้จากทุกที่
-    Options[id]:OnChanged(function(v) end)   /   Options[id]:SetValue(v)
+    Library.Options[id].Value   |  :OnChanged(fn)  |  :SetValue(v)  |  :Reset()
+
+    ── Config (ใช้ได้จริง ต้องมี writefile/readfile ของ executor ถ้าไม่มีจะเก็บในหน่วยความจำ) ──
+    Library:SetFolder("ชื่อโฟลเดอร์")
+    Library.Config:Create / Save / Load / Delete / Rename / Reset / List
+    Library.Config:SetAutoload(name) / ClearAutoload() / LoadAutoload()
+    Library.Config:Export() -> code   |   Library.Config:Import(code, saveAsName)
+    Library.Config:SetIgnoreIndexes({ "WebhookUrl" })   -- id ที่ไม่ต้องเซฟ/แชร์
 ]]
 
 local Players      = game:GetService("Players")
-local UIS          = game:GetService("UserInputService")
+local RealUIS      = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local RunService   = game:GetService("RunService")
+local HttpService  = game:GetService("HttpService")
 local LP           = Players.LocalPlayer
 
-local Library = { Options = {} }
+local Library = { Options = {}, Folder = "AnimeZero", _windows = {} }
 
---// Theme ------------------------------------------------------------------
-local C = {
-    bg    = Color3.fromRGB(27, 19, 23),
-    side  = Color3.fromRGB(32, 21, 25),
-    card  = Color3.fromRGB(42, 29, 34),
-    card2 = Color3.fromRGB(51, 36, 42),
-    line  = Color3.fromRGB(58, 42, 49),
-    pink  = Color3.fromRGB(247, 161, 189),
-    dark  = Color3.fromRGB(42, 26, 32),
-    text  = Color3.fromRGB(238, 227, 231),
-    mute  = Color3.fromRGB(140, 123, 130),
-    green = Color3.fromRGB(127, 224, 160),
-    off   = Color3.fromRGB(74, 58, 65),
+--// เก็บ connection ทั้งหมดไว้ เพื่อ Unload ได้สะอาด ---------------------------
+local conns = {}
+local function proxy(sig)
+    return { Connect = function(_, fn)
+        local c = sig:Connect(fn)
+        table.insert(conns, c)
+        return c
+    end }
+end
+local UIS = {
+    InputBegan = proxy(RealUIS.InputBegan),
+    InputChanged = proxy(RealUIS.InputChanged),
+    InputEnded = proxy(RealUIS.InputEnded),
 }
+
+--// Color helpers -----------------------------------------------------------
+local function colorToHex(c)
+    return string.format("%02X%02X%02X", math.floor(c.R * 255 + .5), math.floor(c.G * 255 + .5), math.floor(c.B * 255 + .5))
+end
+local function hexToColor(h)
+    h = tostring(h):gsub("#", "")
+    return Color3.fromRGB(tonumber(h:sub(1, 2), 16) or 0, tonumber(h:sub(3, 4), 16) or 0, tonumber(h:sub(5, 6), 16) or 0)
+end
+
+--// Theme -------------------------------------------------------------------
+local PresetData = {
+    Rose     = { accent = "F6A0BA", bg = "160F12", surface = "20151A", text = "F0E4E8", muted = "8A7078" },
+    Midnight = { accent = "7AA2F7", bg = "0F111A", surface = "161925", text = "E3E8F5", muted = "737A99" },
+    Ocean    = { accent = "5CC8D7", bg = "0C1519", surface = "12202A", text = "E2F1F4", muted = "6F8E99" },
+    Emerald  = { accent = "6FD6A0", bg = "0E1612", surface = "15211B", text = "E4F2EA", muted = "708A7B" },
+    Sunset   = { accent = "FFB36B", bg = "170F0B", surface = "21160F", text = "F5E8DE", muted = "8F7866" },
+    Mono     = { accent = "D9D9D9", bg = "111111", surface = "1B1B1B", text = "EEEEEE", muted = "808080" },
+}
+local PresetOrder = { "Rose", "Midnight", "Ocean", "Emerald", "Sunset", "Mono" }
+local THEME_KEYS = { "accent", "bg", "surface", "text", "muted" }
+
+local function presetColors(name)
+    local out = {}
+    for k, h in pairs(PresetData[name] or PresetData.Rose) do out[k] = hexToColor(h) end
+    return out
+end
+
+-- แปลง 5 สีหลัก -> ชุดสีที่ UI ใช้จริง
+local function derive(t)
+    return {
+        pink = t.accent, bg = t.bg, dark = t.bg, side = t.surface,
+        card = t.surface:Lerp(t.text, .05), card2 = t.surface:Lerp(t.text, .10),
+        line = t.surface:Lerp(t.text, .13), off = t.surface:Lerp(t.text, .22),
+        text = t.text, mute = t.muted,
+    }
+end
+
+local C = { green = Color3.fromRGB(127, 224, 160) }
+for k, v in pairs(derive(presetColors("Rose"))) do C[k] = v end
 Library.Theme = C
 
---// Helpers ----------------------------------------------------------------
+--// Helpers -----------------------------------------------------------------
 local function new(cls, props, parent)
     local o = Instance.new(cls)
     for k, v in pairs(props or {}) do o[k] = v end
     if parent then o.Parent = parent end
     return o
 end
-local function corner(o, r) return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, o) end
+
+local corners, radiusFactor = {}, 1
+local function corner(o, r, fixed)
+    local u = new("UICorner", { CornerRadius = UDim.new(0, fixed and r or math.floor(r * radiusFactor + .5)) }, o)
+    if not fixed then table.insert(corners, { u, r }) end
+    return u
+end
+function Library:SetCornerRadius(px)
+    radiusFactor = px / 10
+    for i = #corners, 1, -1 do
+        local c = corners[i]
+        if c[1].Parent then
+            c[1].CornerRadius = UDim.new(0, math.floor(c[2] * radiusFactor + .5))
+        else
+            table.remove(corners, i)
+        end
+    end
+end
+
 local function stroke(o, c)
     return new("UIStroke", { Color = c or C.line, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
 end
@@ -75,7 +139,7 @@ local function list(o, gap, dir)
     }, o)
 end
 local function label(parent, p)
-    p.BackgroundTransparency = 1
+    p.BackgroundTransparency = p.BackgroundTransparency or 1
     p.Font = p.Font or Enum.Font.Gotham
     p.TextSize = p.TextSize or 13
     p.TextColor3 = p.TextColor3 or C.text
@@ -96,17 +160,345 @@ local function loadThumb(img)
         if ok then img.Image = res end
     end)
 end
-local function newOption(id)
-    local o = { _cbs = {} }
+local function newOption(id, typeName)
+    local o = { _cbs = {}, Type = typeName }
     function o:OnChanged(fn) table.insert(self._cbs, fn) end
     function o:_fire(...)
         for _, fn in ipairs(self._cbs) do task.spawn(fn, ...) end
+    end
+    function o:Reset()
+        if self._default ~= nil then self:SetValue(self._default) end
     end
     if id then Library.Options[id] = o end
     return o
 end
 
---// Building blocks --------------------------------------------------------
+-- เปลี่ยนสีทั้ง GUI ทันที: หา Instance ที่ใช้สีเดิมของธีม แล้วสลับเป็นสีใหม่
+local COLOR_PROPS = { "BackgroundColor3", "TextColor3", "ImageColor3", "PlaceholderColor3", "ScrollBarImageColor3" }
+local function recolor(root, map)
+    local function fix(inst)
+        for _, p in ipairs(COLOR_PROPS) do
+            local ok, cur = pcall(function() return inst[p] end)
+            if ok and typeof(cur) == "Color3" then
+                local n = map[colorToHex(cur)]
+                if n then inst[p] = n end
+            end
+        end
+        if inst:IsA("UIStroke") then
+            local n = map[colorToHex(inst.Color)]
+            if n then inst.Color = n end
+        end
+    end
+    fix(root)
+    for _, d in ipairs(root:GetDescendants()) do fix(d) end
+end
+function Library:ApplyColors(t)
+    local newTok = derive(t)
+    local map = {}
+    for k, v in pairs(newTok) do map[colorToHex(C[k])] = v end
+    for _, w in ipairs(Library._windows) do
+        if w.Gui and w.Gui.Parent then recolor(w.Gui, map) end
+    end
+    for k, v in pairs(newTok) do C[k] = v end
+end
+
+--// ไฟล์ (ใช้ฟังก์ชันของ executor ถ้ามี ไม่มีก็เก็บในหน่วยความจำ) -----------------
+local FS, mem = {}, {}
+local hasFS = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function"
+    and type(makefolder) == "function" and type(listfiles) == "function" and type(isfile) == "function" and type(delfile) == "function"
+Library.Persistent = hasFS
+
+function FS.mkdir(path)
+    if not hasFS or not path or path == "" then return end
+    local cur = ""
+    for part in path:gmatch("[^/]+") do
+        cur = (cur == "") and part or (cur .. "/" .. part)
+        if not isfolder(cur) then pcall(makefolder, cur) end
+    end
+end
+function FS.write(path, data)
+    if hasFS then
+        FS.mkdir(path:match("^(.*)/[^/]*$"))
+        writefile(path, data)
+    else
+        mem[path] = data
+    end
+end
+function FS.read(path)
+    if hasFS then
+        if isfile(path) then
+            local ok, d = pcall(readfile, path)
+            if ok then return d end
+        end
+        return nil
+    end
+    return mem[path]
+end
+function FS.delete(path)
+    if hasFS then
+        if isfile(path) then pcall(delfile, path) end
+    else
+        mem[path] = nil
+    end
+end
+function FS.list(folder)
+    local out = {}
+    if hasFS then
+        FS.mkdir(folder)
+        local ok, files = pcall(listfiles, folder)
+        if ok then
+            for _, f in ipairs(files) do
+                local name = f:gsub("\\", "/"):match("([^/]+)%.json$")
+                if name then table.insert(out, name) end
+            end
+        end
+    else
+        local prefix = folder .. "/"
+        for p in pairs(mem) do
+            if p:sub(1, #prefix) == prefix then
+                local name = p:match("([^/]+)%.json$")
+                if name then table.insert(out, name) end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a:lower() < b:lower() end)
+    return out
+end
+
+--// Base64 (ใช้แชร์ config เป็นโค้ด) -----------------------------------------
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function b64enc(data)
+    local bits = data:gsub(".", function(x)
+        local r, b = "", x:byte()
+        for i = 8, 1, -1 do r = r .. (b % 2 ^ i - b % 2 ^ (i - 1) > 0 and "1" or "0") end
+        return r
+    end) .. "0000"
+    local out = bits:gsub("%d%d%d?%d?%d?%d?", function(x)
+        if #x < 6 then return "" end
+        local c = 0
+        for i = 1, 6 do c = c + (x:sub(i, i) == "1" and 2 ^ (6 - i) or 0) end
+        return B64:sub(c + 1, c + 1)
+    end)
+    return out .. ({ "", "==", "=" })[#data % 3 + 1]
+end
+local function b64dec(data)
+    data = data:gsub("[^" .. B64 .. "=]", "")
+    local bits = data:gsub(".", function(x)
+        if x == "=" then return "" end
+        local r, f = "", (B64:find(x, 1, true) - 1)
+        for i = 6, 1, -1 do r = r .. (f % 2 ^ i - f % 2 ^ (i - 1) > 0 and "1" or "0") end
+        return r
+    end)
+    local out = bits:gsub("%d%d%d?%d?%d?%d?%d?%d?", function(x)
+        if #x ~= 8 then return "" end
+        local c = 0
+        for i = 1, 8 do c = c + (x:sub(i, i) == "1" and 2 ^ (8 - i) or 0) end
+        return string.char(c)
+    end)
+    return out
+end
+
+--// Config manager ----------------------------------------------------------
+local Config = { Loaded = nil, Ignore = {}, Mode = "All accounts", DefaultTheme = nil, _settingsLoaded = false }
+Library.Config = Config
+
+local function root() return Library.Folder end
+local function cfgPath(n) return root() .. "/configs/" .. n .. ".json" end
+local function skip(id) return id:sub(1, 4) == "_az_" or Config.Ignore[id] end
+
+function Library:SetFolder(name) Library.Folder = tostring(name) end
+function Config:SetIgnoreIndexes(t)
+    self.Ignore = {}
+    for _, id in ipairs(t or {}) do self.Ignore[id] = true end
+end
+function Config.Clean(name)
+    local n = tostring(name or "")
+    n = n:gsub("[^%w _%-%.]", "")
+    n = n:gsub("^%s+", ""):gsub("%s+$", "")
+    return n
+end
+
+function Config:LoadSettings()
+    if self._settingsLoaded then return end
+    self._settingsLoaded = true
+    local raw = FS.read(root() .. "/settings.json")
+    if raw then
+        local ok, d = pcall(HttpService.JSONDecode, HttpService, raw)
+        if ok and type(d) == "table" then
+            self.Mode = d.autoloadMode or self.Mode
+            self.DefaultTheme = d.defaultTheme
+        end
+    end
+end
+function Config:SaveSettings()
+    FS.write(root() .. "/settings.json", HttpService:JSONEncode({ autoloadMode = self.Mode, defaultTheme = self.DefaultTheme }))
+end
+
+function Config:Serialize()
+    local data = {}
+    for id, o in pairs(Library.Options) do
+        if o.Type and not skip(id) then
+            local v
+            if o.Type == "color" then
+                v = colorToHex(o.Value)
+            elseif o.Type == "dropdown" and o.Multi then
+                v = {}
+                for _, n in ipairs(o.Values) do if o.Value[n] then table.insert(v, n) end end
+            else
+                v = o.Value
+            end
+            data[id] = v
+        end
+    end
+    return data
+end
+function Config:Apply(data)
+    for id, v in pairs(data) do
+        local o = Library.Options[id]
+        if o and o.Type and not skip(id) then
+            pcall(function()
+                if o.Type == "color" then
+                    o:SetValue(hexToColor(v))
+                elseif o.Type == "dropdown" and o.Multi then
+                    local m = {}
+                    for _, n in ipairs(v) do m[n] = true end
+                    o:SetValue(m)
+                else
+                    o:SetValue(v)
+                end
+            end)
+        end
+    end
+end
+
+function Config:List() return FS.list(root() .. "/configs") end
+function Config:Exists(name) return FS.read(cfgPath(Config.Clean(name))) ~= nil end
+
+function Config:Save(name)
+    name = Config.Clean(name)
+    if name == "" then return false, "Enter a config name" end
+    FS.write(cfgPath(name), HttpService:JSONEncode(self:Serialize()))
+    self.Loaded = name
+    return true
+end
+function Config:Create(name)
+    name = Config.Clean(name)
+    if name == "" then return false, "Enter a config name" end
+    if self:Exists(name) then return false, "Config already exists" end
+    return self:Save(name)
+end
+function Config:Load(name)
+    name = Config.Clean(name)
+    local raw = FS.read(cfgPath(name))
+    if not raw then return false, "Config not found" end
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, raw)
+    if not ok or type(data) ~= "table" then return false, "Invalid config file" end
+    self:Apply(data)
+    self.Loaded = name
+    return true
+end
+function Config:Delete(name)
+    name = Config.Clean(name)
+    if not self:Exists(name) then return false, "Config not found" end
+    FS.delete(cfgPath(name))
+    if self.Loaded == name then self.Loaded = nil end
+    if self:GetAutoload() == name then self:ClearAutoload() end
+    return true
+end
+function Config:Rename(old, new)
+    old, new = Config.Clean(old), Config.Clean(new)
+    if new == "" then return false, "Enter the new name" end
+    local raw = FS.read(cfgPath(old))
+    if not raw then return false, "Config not found" end
+    if self:Exists(new) then return false, "Name already used" end
+    FS.write(cfgPath(new), raw)
+    FS.delete(cfgPath(old))
+    if self.Loaded == old then self.Loaded = new end
+    if self:GetAutoload() == old then self:SetAutoload(new) end
+    return true
+end
+function Config:Reset()
+    for id, o in pairs(Library.Options) do
+        if o.Type and not skip(id) then pcall(o.Reset, o) end
+    end
+    self.Loaded = nil
+end
+
+local function autoloadPath()
+    if Config.Mode == "This account" then return root() .. "/autoload_" .. LP.UserId .. ".txt" end
+    return root() .. "/autoload.txt"
+end
+function Config:GetAutoload()
+    self:LoadSettings()
+    local n = FS.read(autoloadPath())
+    if n and n ~= "" then return n end
+    return nil
+end
+function Config:SetAutoload(name)
+    name = Config.Clean(name)
+    if not self:Exists(name) then return false, "Config not found" end
+    FS.write(autoloadPath(), name)
+    return true
+end
+function Config:ClearAutoload() FS.delete(autoloadPath()) end
+function Config:LoadAutoload()
+    local n = self:GetAutoload()
+    if n then return self:Load(n) end
+    return false, "No autoload set"
+end
+
+function Config:Export()
+    return b64enc(HttpService:JSONEncode(self:Serialize()))
+end
+function Config:Import(code, saveAs)
+    code = tostring(code or ""):gsub("%s", "")
+    if code == "" then return false, "Paste a config code first" end
+    local ok, json = pcall(b64dec, code)
+    if not ok then return false, "Invalid code" end
+    local ok2, data = pcall(HttpService.JSONDecode, HttpService, json)
+    if not ok2 or type(data) ~= "table" then return false, "Invalid code" end
+    self:Apply(data)
+    if saveAs and Config.Clean(saveAs) ~= "" then self:Save(saveAs) end
+    return true
+end
+
+--// Theme manager (เซฟ/โหลดชุดสี) -------------------------------------------
+local Themes = {}
+Library.Themes = Themes
+local function themePath(n) return root() .. "/themes/" .. n .. ".json" end
+function Themes:List() return FS.list(root() .. "/themes") end
+function Themes:Save(name, colors)
+    name = Config.Clean(name)
+    if name == "" then return false, "Enter a theme name" end
+    local d = {}
+    for _, k in ipairs(THEME_KEYS) do d[k] = colorToHex(colors[k]) end
+    FS.write(themePath(name), HttpService:JSONEncode(d))
+    return true
+end
+function Themes:Load(name)
+    local raw = FS.read(themePath(Config.Clean(name)))
+    if not raw then return nil end
+    local ok, d = pcall(HttpService.JSONDecode, HttpService, raw)
+    if not ok or type(d) ~= "table" then return nil end
+    local out = {}
+    for _, k in ipairs(THEME_KEYS) do out[k] = hexToColor(d[k] or "FFFFFF") end
+    return out
+end
+function Themes:Delete(name)
+    FS.delete(themePath(Config.Clean(name)))
+    if Config.DefaultTheme == name then Config.DefaultTheme = nil; Config:SaveSettings() end
+end
+function Themes:SetDefault(name)
+    Config:LoadSettings()
+    Config.DefaultTheme = name
+    Config:SaveSettings()
+end
+function Themes:GetDefault()
+    Config:LoadSettings()
+    return Config.DefaultTheme
+end
+
+--// Building blocks ---------------------------------------------------------
 local function makeCard(parent, title, closed)
     local card = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.card, ClipsDescendants = true }, parent)
     corner(card, 10); stroke(card); list(card, 0)
@@ -141,8 +533,8 @@ local function makeCol(parent, side)
     return f
 end
 
-local function makeButton(parent, text, cb)
-    local b = new("TextButton", { Text = text, Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.card2, AutoButtonColor = false, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text }, parent)
+local function makeButton(parent, text, cb, color)
+    local b = new("TextButton", { Text = text, Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.card2, AutoButtonColor = false, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = color or C.text }, parent)
     corner(b, 9); stroke(b)
     b.MouseEnter:Connect(function() b.BackgroundColor3 = C.line end)
     b.MouseLeave:Connect(function() b.BackgroundColor3 = C.card2 end)
@@ -164,17 +556,19 @@ function Components:AddToggle(id, cfg)
     cfg = cfg or {}
     local row = mkRow(self, cfg.Title or id, 32)
     local sw = new("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.fromOffset(38, 20), AnchorPoint = Vector2.new(1, .5), Position = UDim2.fromScale(1, .5), BackgroundColor3 = C.off }, row)
-    corner(sw, 10)
-    local knob = new("Frame", { Size = UDim2.fromOffset(14, 14), AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 3, .5, 0), BackgroundColor3 = Color3.fromRGB(190, 180, 184) }, sw)
-    corner(knob, 7)
-    local o = newOption(id)
+    corner(sw, 10, true)
+    local knobOff = Color3.fromRGB(190, 180, 184)
+    local knob = new("Frame", { Size = UDim2.fromOffset(14, 14), AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 3, .5, 0), BackgroundColor3 = knobOff }, sw)
+    corner(knob, 7, true)
+    local o = newOption(id, "toggle")
     o.Value = cfg.Default or false
+    o._default = o.Value
     local function paint(anim)
         local info = TweenInfo.new(anim and .15 or 0)
         TweenService:Create(sw, info, { BackgroundColor3 = o.Value and C.pink or C.off }):Play()
         TweenService:Create(knob, info, {
             Position = o.Value and UDim2.new(0, 21, .5, 0) or UDim2.new(0, 3, .5, 0),
-            BackgroundColor3 = o.Value and C.dark or Color3.fromRGB(190, 180, 184),
+            BackgroundColor3 = o.Value and C.dark or knobOff,
         }):Play()
     end
     function o:SetValue(v)
@@ -192,17 +586,17 @@ function Components:AddSlider(id, cfg)
     cfg = cfg or {}
     local min, max = cfg.Min or 0, cfg.Max or 100
     local suffix = cfg.Suffix or ""
-    local row = mkRow(self, cfg.Title or id, 46, 26)
+    local row = mkRow(self, cfg.Title or id or "", 46, 26)
     local val = label(row, { Text = "", Position = UDim2.fromScale(.6, 0), Size = UDim2.new(.4, 0, 0, 26), TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = C.pink })
     local track = new("Frame", { Position = UDim2.fromOffset(0, 34), Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = C.off, BorderSizePixel = 0 }, row)
-    corner(track, 2)
+    corner(track, 2, true)
     local fill = new("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.pink, BorderSizePixel = 0 }, track)
-    corner(fill, 2)
+    corner(fill, 2, true)
     local knob = new("Frame", { Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(0, .5), BackgroundColor3 = C.pink }, track)
-    corner(knob, 6)
+    corner(knob, 6, true)
     local hit = new("TextButton", { Text = "", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 20) }, row)
 
-    local o = newOption(id)
+    local o = newOption(id, "slider")
     local function set(v, silent)
         v = math.clamp(math.floor(v + .5), min, max)
         o.Value = v
@@ -215,7 +609,7 @@ function Components:AddSlider(id, cfg)
             if cfg.Callback then task.spawn(cfg.Callback, v) end
         end
     end
-    function o:SetValue(v) set(v) end
+    function o:SetValue(v, silent) set(tonumber(v) or min, silent) end
 
     local dragging = false
     local function fromX(x)
@@ -227,31 +621,43 @@ function Components:AddSlider(id, cfg)
     UIS.InputEnded:Connect(function(i) if isPress(i) then dragging = false end end)
 
     set(cfg.Default or min, true)
+    o._default = o.Value
     return o
 end
 
 function Components:AddDropdown(id, cfg)
     cfg = cfg or {}
-    local values, multi = cfg.Values or {}, cfg.Multi
+    local multi = cfg.Multi
+    local values = cfg.Values or {}
     local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, self.Body)
     list(holder, 4)
-    local row = mkRow({ Body = holder, Rows = self.Rows }, cfg.Title or id, 32)
-    local btn = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, .5), Position = UDim2.fromScale(1, .5), Size = UDim2.fromOffset(150, 26), BackgroundColor3 = C.bg }, row)
+
+    local row, btnSize
+    if cfg.Title then
+        row = mkRow({ Body = holder, Rows = self.Rows }, cfg.Title, 32)
+        btnSize = UDim2.fromOffset(150, 26)
+    else
+        row = new("Frame", { Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1 }, holder)
+        btnSize = UDim2.new(1, 0, 0, 30)
+    end
+    local btn = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, .5), Position = UDim2.fromScale(1, .5), Size = btnSize, BackgroundColor3 = C.bg }, row)
     corner(btn, 7); stroke(btn)
-    local txt = label(btn, { Text = "", Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -28, 1, 0), TextSize = 12, TextTruncate = Enum.TextTruncate.AtEnd })
+    local txt = label(btn, { Text = "", Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -30, 1, 0), TextSize = 12, TextTruncate = Enum.TextTruncate.AtEnd })
     label(btn, { Text = "v", Position = UDim2.new(1, -20, 0, 0), Size = UDim2.fromOffset(14, 26), TextColor3 = C.mute, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Center })
 
     local menu = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.bg, Visible = false, LayoutOrder = 1 }, holder)
     corner(menu, 8); stroke(menu); list(menu, 0)
 
-    local o = newOption(id)
+    local o = newOption(id, "dropdown")
+    o.Multi, o.Values = multi, values
     if multi then
         o.Value = {}
         for _, v in ipairs(cfg.Default or {}) do o.Value[v] = true end
     else
         local d = cfg.Default
         if type(d) == "number" then d = values[d] end
-        o.Value = d or values[1]
+        o.Value = d
+        if o.Value == nil and cfg.Default == nil and not cfg.NoAutoSelect then o.Value = values[1] end
     end
 
     local items = {}
@@ -262,7 +668,8 @@ function Components:AddDropdown(id, cfg)
             txt.Text = #picked > 0 and table.concat(picked, ", ") or "None"
             for v, b in pairs(items) do b.TextColor3 = o.Value[v] and C.pink or C.text end
         else
-            txt.Text = tostring(o.Value)
+            txt.Text = o.Value ~= nil and tostring(o.Value) or (cfg.EmptyText or "--")
+            txt.TextColor3 = o.Value ~= nil and C.text or C.mute
             for v, b in pairs(items) do b.TextColor3 = (o.Value == v) and C.pink or C.text end
         end
     end
@@ -271,49 +678,109 @@ function Components:AddDropdown(id, cfg)
         o:_fire(o.Value)
         if cfg.Callback then task.spawn(cfg.Callback, o.Value) end
     end
-    for idx, v in ipairs(values) do
-        local b = new("TextButton", {
-            Text = "  " .. v, Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, AutoButtonColor = false,
-            Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = idx,
-        }, menu)
-        items[v] = b
-        b.Activated:Connect(function()
-            if multi then
-                o.Value[v] = (not o.Value[v]) or nil
-            else
-                o.Value = v
-                menu.Visible = false
+    local function build()
+        for _, b in pairs(items) do b:Destroy() end
+        items = {}
+        for idx, v in ipairs(values) do
+            local b = new("TextButton", {
+                Text = "  " .. v, Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, AutoButtonColor = false,
+                Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = idx,
+            }, menu)
+            items[v] = b
+            b.Activated:Connect(function()
+                if multi then
+                    o.Value[v] = (not o.Value[v]) or nil
+                else
+                    o.Value = v
+                    menu.Visible = false
+                end
+                changed()
+            end)
+        end
+        refresh()
+    end
+
+    function o:SetValues(newValues)
+        values = newValues or {}
+        o.Values = values
+        if multi then
+            for k in pairs(o.Value) do if not table.find(values, k) then o.Value[k] = nil end end
+        elseif o.Value == nil or not table.find(values, o.Value) then
+            o.Value = values[1]
+        end
+        build()
+    end
+    function o:SetValue(v)
+        if multi then
+            o.Value = {}
+            if type(v) == "table" then
+                for k, on in pairs(v) do if on and table.find(values, k) then o.Value[k] = true end end
             end
-            changed()
-        end)
+        else
+            if not table.find(values, v) then return end
+            o.Value = v
+        end
+        changed()
     end
     btn.Activated:Connect(function() menu.Visible = not menu.Visible end)
-    function o:SetValue(v) o.Value = v; changed() end
-    refresh()
+
+    build()
+    if multi then
+        o._default = {}
+        for k in pairs(o.Value) do o._default[k] = true end
+    else
+        o._default = o.Value
+    end
     return o
 end
 
 function Components:AddButton(cfg)
     cfg = cfg or {}
-    local b = makeButton(self.Body, cfg.Title or "Button", cfg.Callback)
+    local b = makeButton(self.Body, cfg.Title or "Button", cfg.Callback, cfg.Color)
     table.insert(self.Rows, { row = b, text = tostring(cfg.Title or ""):lower() })
     return b
 end
 
+function Components:AddButtonRow(buttons, height)
+    height = height or 40
+    local n = #buttons
+    local grid = new("Frame", { Size = UDim2.new(1, 0, 0, height), BackgroundTransparency = 1 }, self.Body)
+    new("UIGridLayout", { CellSize = UDim2.new(1 / n, -(8 * (n - 1)) / n, 0, height), CellPadding = UDim2.fromOffset(8, 0), SortOrder = Enum.SortOrder.LayoutOrder }, grid)
+    for i, b in ipairs(buttons) do
+        local btn = makeButton(grid, b.Title, b.Callback, b.Color)
+        btn.LayoutOrder = i
+        table.insert(self.Rows, { row = btn, text = tostring(b.Title):lower() })
+    end
+end
+
 function Components:AddInput(id, cfg)
     cfg = cfg or {}
-    local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 56), BackgroundTransparency = 1 }, self.Body)
-    label(holder, { Text = cfg.Title or id, Size = UDim2.new(1, 0, 0, 20) })
+    local hasTitle = cfg.Title ~= nil
+    local holder = new("Frame", { Size = UDim2.new(1, 0, 0, hasTitle and 56 or 36), BackgroundTransparency = 1 }, self.Body)
+    if hasTitle then
+        label(holder, { Text = cfg.Title, Size = UDim2.new(1, 0, 0, 20) })
+        table.insert(self.Rows, { row = holder, text = tostring(cfg.Title):lower() })
+    end
+    local y = hasTitle and 22 or 2
+    local btnW = cfg.Button and 68 or 0
     local box = new("TextBox", {
-        Position = UDim2.fromOffset(0, 22), Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.bg,
+        Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, -(btnW + (cfg.Button and 8 or 0)), 0, 30), BackgroundColor3 = C.bg,
         Text = cfg.Default or "", PlaceholderText = cfg.Placeholder or "", PlaceholderColor3 = C.mute,
         TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false,
-        TextXAlignment = Enum.TextXAlignment.Left, ClipsDescendants = true,
+        TextXAlignment = hasTitle and Enum.TextXAlignment.Left or Enum.TextXAlignment.Center, ClipsDescendants = true,
     }, holder)
     corner(box, 8); stroke(box); pad(box, 10, 0)
-    table.insert(self.Rows, { row = holder, text = tostring(cfg.Title or id):lower() })
-    local o = newOption(id)
+    if cfg.Button then
+        local b = makeButton(holder, cfg.Button.Title or "Set", function()
+            if cfg.Button.Callback then cfg.Button.Callback(box.Text) end
+        end)
+        b.Position = UDim2.new(1, -btnW, 0, y)
+        b.Size = UDim2.fromOffset(btnW, 30)
+    end
+
+    local o = newOption(id, "input")
     o.Value = box.Text
+    o._default = o.Value
     local function push()
         o.Value = box.Text
         o:_fire(o.Value)
@@ -324,7 +791,100 @@ function Components:AddInput(id, cfg)
     else
         box:GetPropertyChangedSignal("Text"):Connect(push)
     end
-    function o:SetValue(v) box.Text = tostring(v) end
+    function o:SetValue(v)
+        box.Text = tostring(v)
+        o.Value = box.Text
+        if cfg.Finished then push() end
+    end
+    return o
+end
+
+local KEY_NAMES = { RightControl = "RCtrl", LeftControl = "LCtrl", RightShift = "RShift", LeftShift = "LShift", RightAlt = "RAlt", LeftAlt = "LAlt" }
+function Components:AddKeybind(id, cfg)
+    cfg = cfg or {}
+    local row = mkRow(self, cfg.Title or id, 32)
+    local btn = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, .5), Position = UDim2.fromScale(1, .5), Size = UDim2.fromOffset(64, 26), BackgroundColor3 = C.bg }, row)
+    corner(btn, 7); stroke(btn)
+    local txt = label(btn, { Text = "", Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, TextSize = 12 })
+    local o = newOption(id, "keybind")
+    o.Value = cfg.Default or "RightControl"
+    o._default = o.Value
+    local listening = false
+    local function show()
+        txt.Text = listening and "..." or (KEY_NAMES[o.Value] or o.Value)
+        txt.TextColor3 = listening and C.pink or C.text
+    end
+    function o:SetValue(v)
+        local ok, kc = pcall(function() return Enum.KeyCode[v] end)
+        if ok and kc then
+            o.Value = v
+            show()
+            o:_fire(v)
+            if cfg.Callback then task.spawn(cfg.Callback, v) end
+        end
+    end
+    btn.Activated:Connect(function()
+        listening = true
+        Library._listening = true
+        show()
+    end)
+    UIS.InputBegan:Connect(function(i)
+        if not listening or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        listening = false
+        if i.KeyCode ~= Enum.KeyCode.Escape then o:SetValue(i.KeyCode.Name) else show() end
+        task.defer(function() Library._listening = false end)
+    end)
+    show()
+    return o
+end
+
+function Components:AddColorPicker(id, cfg)
+    cfg = cfg or {}
+    local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, self.Body)
+    list(holder, 4)
+    local row = mkRow({ Body = holder, Rows = self.Rows }, cfg.Title or id, 34)
+    local arrow = new("TextButton", { Text = "v", AutoButtonColor = false, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, .5), Position = UDim2.fromScale(1, .5), Size = UDim2.fromOffset(22, 26), Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = C.mute }, row)
+    local sw = new("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -28, .5, 0), Size = UDim2.fromOffset(34, 24), BackgroundColor3 = cfg.Default or Color3.new(1, 1, 1) }, row)
+    corner(sw, 7); stroke(sw)
+    local hexL = label(row, { Text = "", AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -70, .5, 0), Size = UDim2.fromOffset(70, 20), TextXAlignment = Enum.TextXAlignment.Right, TextSize = 10, TextColor3 = C.mute })
+
+    local panel = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.bg, Visible = false, LayoutOrder = 1 }, holder)
+    corner(panel, 8); stroke(panel); pad(panel, 10, 4, 10, 6); list(panel, 0)
+
+    local o = newOption(id, "color")
+    o.Value = cfg.Default or Color3.new(1, 1, 1)
+    o._default = o.Value
+    local sliders = {}
+    local function apply(c, silent)
+        o.Value = c
+        sw.BackgroundColor3 = c
+        hexL.Text = "#" .. colorToHex(c)
+        if sliders[1] then
+            sliders[1]:SetValue(c.R * 255, true)
+            sliders[2]:SetValue(c.G * 255, true)
+            sliders[3]:SetValue(c.B * 255, true)
+        end
+        if not silent then
+            o:_fire(c)
+            if cfg.Callback then task.spawn(cfg.Callback, c) end
+        end
+    end
+    function o:SetValue(c, silent) apply(c, silent) end
+
+    local sub = { Body = panel, Rows = {} }
+    local init = { o.Value.R * 255, o.Value.G * 255, o.Value.B * 255 }
+    for i, ch in ipairs({ "Red", "Green", "Blue" }) do
+        sliders[i] = Components.AddSlider(sub, nil, {
+            Title = ch, Min = 0, Max = 255, Default = math.floor(init[i] + .5),
+            Callback = function()
+                apply(Color3.fromRGB(sliders[1].Value, sliders[2].Value, sliders[3].Value))
+            end,
+        })
+    end
+    local function toggle() panel.Visible = not panel.Visible; arrow.Text = panel.Visible and "^" or "v" end
+    arrow.Activated:Connect(toggle)
+    sw.Activated:Connect(toggle)
+    apply(o.Value, true)
     return o
 end
 
@@ -334,6 +894,21 @@ function Components:AddInfo(cfg)
     label(row, { Text = cfg.Title or "", Size = UDim2.new(.5, 0, 1, 0), TextSize = 11, TextColor3 = C.mute })
     local v = label(row, { Text = cfg.Value or "", Position = UDim2.fromScale(.5, 0), Size = UDim2.fromScale(.5, 1), TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right })
     return { SetValue = function(_, t) v.Text = tostring(t) end, Label = v }
+end
+
+function Components:AddLabel(cfg)
+    if type(cfg) == "string" then cfg = { Text = cfg } end
+    cfg = cfg or {}
+    local l = label(self.Body, { Text = cfg.Text or "", Size = UDim2.new(1, 0, 0, 20), TextSize = 11, TextColor3 = C.mute, TextXAlignment = Enum.TextXAlignment.Center })
+    return { SetText = function(_, t) l.Text = tostring(t) end, Label = l }
+end
+
+function Components:AddDivider(text)
+    local row = new("Frame", { Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1 }, self.Body)
+    new("Frame", { AnchorPoint = Vector2.new(0, .5), Position = UDim2.fromScale(0, .5), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = C.line, BorderSizePixel = 0 }, row)
+    if text and text ~= "" then
+        label(row, { Text = text, AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(56, 16), BackgroundTransparency = 0, BackgroundColor3 = C.card, TextSize = 10, TextColor3 = C.mute, TextXAlignment = Enum.TextXAlignment.Center })
+    end
 end
 
 function Components:AddParagraph(cfg)
@@ -350,7 +925,7 @@ function Components:AddProfile(cfg)
     cfg = cfg or {}
     local row = new("Frame", { Size = UDim2.new(1, 0, 0, 64), BackgroundTransparency = 1 }, self.Body)
     local av = new("ImageLabel", { Size = UDim2.fromOffset(56, 56), Position = UDim2.new(1, -56, 0, 4), BackgroundColor3 = C.card2 }, row)
-    corner(av, 28); loadThumb(av)
+    corner(av, 28, true); loadThumb(av)
     label(row, { Text = "WELCOME BACK", Size = UDim2.new(1, -70, 0, 12), TextSize = 10, TextColor3 = C.mute })
     label(row, { Text = cfg.Title or LP.DisplayName, Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, -70, 0, 26), Font = Enum.Font.GothamBold, TextSize = 20 })
     label(row, { Text = cfg.Subtitle or ("@" .. LP.Name), Position = UDim2.fromOffset(0, 42), Size = UDim2.new(1, -70, 0, 14), TextSize = 11, TextColor3 = C.mute })
@@ -365,15 +940,6 @@ function Components:AddStats(names)
         out[i] = label(half, { Text = "-", Position = UDim2.fromOffset(0, 16), Size = UDim2.new(1, 0, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22, TextColor3 = C.green })
     end
     return table.unpack(out)
-end
-
-function Components:AddButtonRow(buttons)
-    local grid = new("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1 }, self.Body)
-    new("UIGridLayout", { CellSize = UDim2.new(1 / #buttons, -8, 0, 40), CellPadding = UDim2.fromOffset(8, 0), SortOrder = Enum.SortOrder.LayoutOrder }, grid)
-    for i, b in ipairs(buttons) do
-        local btn = makeButton(grid, b.Title, b.Callback)
-        btn.LayoutOrder = i
-    end
 end
 
 --// Container (Tab / SubTab ใช้ร่วมกัน) -------------------------------------
@@ -431,14 +997,23 @@ end
 
 local TabMT = { __index = function(_, k) return TabMethods[k] or Container[k] end }
 
---// Window -----------------------------------------------------------------
+--// Unload ------------------------------------------------------------------
+function Library:Unload()
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    table.clear(conns)
+    for _, w in ipairs(Library._windows) do pcall(function() w.Gui:Destroy() end) end
+    table.clear(Library._windows)
+end
+
+--// Window ------------------------------------------------------------------
 function Library:CreateWindow(cfg)
     cfg = cfg or {}
     local PlayerGui = LP:WaitForChild("PlayerGui")
-    local guiName = "AnimeZeroGUI_" .. (cfg.Title or "Window"):gsub("%W", "")
+    local guiName = "AnimeZeroGUI_" .. tostring(cfg.Title or "Window"):gsub("%W", "")
     if PlayerGui:FindFirstChild(guiName) then PlayerGui[guiName]:Destroy() end
 
-    local gui = new("ScreenGui", { Name = guiName, ResetOnSpawn = false, DisplayOrder = 10, IgnoreGuiInset = true }, PlayerGui)
+    local gui = new("ScreenGui", { Name = guiName, ResetOnSpawn = false, DisplayOrder = 10, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, PlayerGui)
+
     local function viewport()
         local cam = workspace.CurrentCamera
         return cam and cam.ViewportSize or Vector2.new(1280, 720)
@@ -449,23 +1024,34 @@ function Library:CreateWindow(cfg)
     local h = math.min(want and want.Y.Offset or 480, vp.Y - 20)
     local minW, minH = math.min(520, w), math.min(360, h)
 
-    -- ใช้ตำแหน่ง/ขนาดแบบพิกเซล เพื่อให้ย่อ-ขยายจากมุมซ้ายบนได้
+    -- ชั้นหลังสุด: ฉากมืด (Dim) และสภาพอากาศแบบเต็มจอ
+    local dim = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = .45, BorderSizePixel = 0, Visible = false, ZIndex = 0 }, gui)
+    local weatherScreen = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 0, Active = false }, gui)
+
     local main = new("Frame", {
-        Size = UDim2.fromOffset(w, h), AnchorPoint = Vector2.new(0, 0),
+        Size = UDim2.fromOffset(w, h), AnchorPoint = Vector2.new(0, 0), ZIndex = 1,
         Position = UDim2.fromOffset((vp.X - w) / 2, (vp.Y - h) / 2),
         BackgroundColor3 = C.bg, ClipsDescendants = true,
     }, gui)
     corner(main, 14); stroke(main)
+    local uiScale = new("UIScale", { Scale = 1 }, main)
+
+    local bgImage = new("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Crop, ImageTransparency = .35, Visible = false, ZIndex = 0 }, main)
+    corner(bgImage, 14)
+    local weatherWindow = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 0, Active = false }, main)
+
+    local Window = { Gui = gui, Main = main, _scale = 1, _adaptive = true, _dim = false, _dragStyle = "Outline", _toggleKey = cfg.ToggleKey or Enum.KeyCode.RightControl }
+    table.insert(Library._windows, Window)
 
     -- Sidebar
     local side = new("Frame", { Size = UDim2.new(0, 180, 1, 0), BackgroundColor3 = C.side, BorderSizePixel = 0 }, main)
-    corner(side, 14) -- ให้มุมซ้ายของแถบเมนูโค้งตามหน้าต่าง (ClipsDescendants ตัดมุมโค้งให้ไม่ได้)
-    new("Frame", { Size = UDim2.new(0, 20, 1, 0), Position = UDim2.new(1, -20, 0, 0), BackgroundColor3 = C.side, BorderSizePixel = 0 }, side) -- ทำขอบขวาให้เหลี่ยมกลับ
+    corner(side, 14)
+    new("Frame", { Size = UDim2.new(0, 20, 1, 0), Position = UDim2.new(1, -20, 0, 0), BackgroundColor3 = C.side, BorderSizePixel = 0 }, side)
     new("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0), BackgroundColor3 = C.line, BorderSizePixel = 0 }, side)
 
     local brand = new("Frame", { Size = UDim2.new(1, 0, 0, 62), BackgroundTransparency = 1 }, side)
     local logo = new("Frame", { Size = UDim2.fromOffset(32, 32), Position = UDim2.fromOffset(16, 16), BackgroundTransparency = 1 }, brand)
-    corner(logo, 16)
+    corner(logo, 16, true)
     new("UIStroke", { Color = C.pink, Thickness = 3 }, logo)
     label(logo, { Text = "Z", Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextColor3 = C.pink, TextXAlignment = Enum.TextXAlignment.Center })
     label(brand, { Text = cfg.Title or "Anime Zero", Position = UDim2.fromOffset(58, 14), Size = UDim2.new(1, -60, 0, 18), Font = Enum.Font.GothamBold })
@@ -477,8 +1063,8 @@ function Library:CreateWindow(cfg)
     local userCard = new("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -10), Size = UDim2.new(1, -20, 0, 50), BackgroundColor3 = C.card }, side)
     corner(userCard, 10); stroke(userCard)
     local uAv = new("ImageLabel", { Size = UDim2.fromOffset(30, 30), Position = UDim2.fromOffset(8, 10), BackgroundColor3 = C.card2 }, userCard)
-    corner(uAv, 15); loadThumb(uAv)
-    corner(new("Frame", { Size = UDim2.fromOffset(9, 9), Position = UDim2.fromOffset(31, 33), BackgroundColor3 = C.green }, userCard), 5)
+    corner(uAv, 15, true); loadThumb(uAv)
+    corner(new("Frame", { Size = UDim2.fromOffset(9, 9), Position = UDim2.fromOffset(31, 33), BackgroundColor3 = C.green }, userCard), 5, true)
     label(userCard, { Text = LP.DisplayName, Position = UDim2.fromOffset(46, 9), Size = UDim2.new(1, -52, 0, 16), Font = Enum.Font.GothamMedium, TextTruncate = Enum.TextTruncate.AtEnd })
     label(userCard, { Text = cfg.GameLabel or "", Position = UDim2.fromOffset(46, 25), Size = UDim2.new(1, -52, 0, 14), TextSize = 10, TextColor3 = C.mute })
 
@@ -493,12 +1079,34 @@ function Library:CreateWindow(cfg)
     }, content)
     new("Frame", { Position = UDim2.new(1, -224, 0, 42), Size = UDim2.fromOffset(170, 1), BackgroundColor3 = C.line, BorderSizePixel = 0 }, content)
     local minBtn = new("TextButton", { Text = "–", Position = UDim2.new(1, -40, 0, 14), Size = UDim2.fromOffset(28, 28), BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = C.pink }, content)
-    minBtn.Activated:Connect(function() main.Visible = false end)
 
     local area = new("Frame", { Position = UDim2.fromOffset(0, 56), Size = UDim2.new(1, 0, 1, -56), BackgroundTransparency = 1 }, content)
     pad(area, 18, 0, 12, 0)
 
-    -- กรอบ "ผี" (ghost) ที่โผล่ตอนลาก: ปล่อยเมาส์แล้วหน้าต่างค่อยย้ายตามไป
+    -- เปิด/ปิดหน้าต่าง ---------------------------------------------------------
+    function Window:SetVisible(v)
+        main.Visible = v
+        dim.Visible = v and Window._dim
+        weatherScreen.Visible = v
+    end
+    function Window:Toggle() Window:SetVisible(not main.Visible) end
+    function Window:Destroy() gui:Destroy() end
+    minBtn.Activated:Connect(function() Window:SetVisible(false) end)
+
+    UIS.InputBegan:Connect(function(i, gp)
+        if gp or Library._listening then return end
+        if i.KeyCode == Window._toggleKey then Window:Toggle() end
+    end)
+
+    -- ปุ่มลอยสำหรับเปิด/ปิด (มือถือ) ------------------------------------------
+    local tbtn = new("TextButton", { Text = "Z", Size = UDim2.fromOffset(42, 42), Position = UDim2.new(0, 16, .5, -21), BackgroundColor3 = C.card, Font = Enum.Font.GothamBold, TextSize = 17, TextColor3 = C.pink, AutoButtonColor = false, Visible = false, ZIndex = 60 }, gui)
+    corner(tbtn, 21, true); stroke(tbtn, C.pink)
+    tbtn.Activated:Connect(function() Window:Toggle() end)
+    function Window:SetToggleButton(mode)
+        tbtn.Visible = (mode == "Always") or (mode == "Mobile only" and RealUIS.TouchEnabled and not RealUIS.KeyboardEnabled)
+    end
+
+    -- ลากหน้าต่าง (กรอบ Ghost) + ย่อ/ขยาย -----------------------------------
     local function makeGhost()
         local g = new("Frame", {
             Size = UDim2.fromOffset(main.AbsoluteSize.X, main.AbsoluteSize.Y),
@@ -516,11 +1124,10 @@ function Library:CreateWindow(cfg)
         end
         for _, p in ipairs({ { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 }, { .5, 0 }, { .5, 1 }, { 0, .5 }, { 1, .5 } }) do
             local dot = new("Frame", { Size = UDim2.fromOffset(6, 6), AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(p[1], p[2]), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 52 }, g)
-            corner(dot, 3)
+            corner(dot, 3, true)
         end
         return g
     end
-
     local function clampPos(x, y)
         local v, sz = viewport(), main.AbsoluteSize
         return math.clamp(x, 80 - sz.X, v.X - 80), math.clamp(y, 0, v.Y - 40)
@@ -528,15 +1135,13 @@ function Library:CreateWindow(cfg)
 
     local dragging, ghost, dragStart, startPos
     local resizing, rStart, rSize
-
     dragHandle.InputBegan:Connect(function(i)
         if isPress(i) and not dragging then
             dragging, dragStart, startPos = true, i.Position, main.AbsolutePosition
-            ghost = makeGhost()
+            if Window._dragStyle ~= "Live" then ghost = makeGhost() end
         end
     end)
 
-    -- มุมขวาล่าง: ปุ่มย่อ/ขยายหน้าต่าง
     local grip = new("TextButton", { Text = "", BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -4, 1, -4), Size = UDim2.fromOffset(20, 20), ZIndex = 20 }, main)
     for i = 0, 2 do
         for j = 0, 2 - i do
@@ -544,23 +1149,23 @@ function Library:CreateWindow(cfg)
         end
     end
     grip.InputBegan:Connect(function(i)
-        if isPress(i) then resizing, rStart, rSize = true, i.Position, main.AbsoluteSize end
+        if isPress(i) then resizing, rStart, rSize = true, i.Position, Vector2.new(main.Size.X.Offset, main.Size.Y.Offset) end
     end)
 
     UIS.InputChanged:Connect(function(i)
         if not isMove(i) then return end
-        if dragging and ghost then
+        if dragging then
             local d = i.Position - dragStart
             local x, y = clampPos(startPos.X + d.X, startPos.Y + d.Y)
-            ghost.Position = UDim2.fromOffset(x, y)
+            if ghost then ghost.Position = UDim2.fromOffset(x, y) else main.Position = UDim2.fromOffset(x, y) end
         elseif resizing then
-            local d, v = i.Position - rStart, viewport()
-            local nw = math.clamp(rSize.X + d.X, minW, math.max(minW, v.X - main.AbsolutePosition.X))
-            local nh = math.clamp(rSize.Y + d.Y, minH, math.max(minH, v.Y - main.AbsolutePosition.Y))
+            local s, v = Window._scale, viewport()
+            local d = i.Position - rStart
+            local nw = math.clamp(rSize.X + d.X / s, minW, math.max(minW, (v.X - main.AbsolutePosition.X) / s))
+            local nh = math.clamp(rSize.Y + d.Y / s, minH, math.max(minH, (v.Y - main.AbsolutePosition.Y) / s))
             main.Size = UDim2.fromOffset(nw, nh)
         end
     end)
-
     UIS.InputEnded:Connect(function(i)
         if not isPress(i) then return end
         if dragging then
@@ -573,17 +1178,82 @@ function Library:CreateWindow(cfg)
         resizing = false
     end)
 
-    local toggleKey = cfg.ToggleKey or Enum.KeyCode.RightShift
-    UIS.InputBegan:Connect(function(i, gp)
-        if not gp and i.KeyCode == toggleKey then main.Visible = not main.Visible end
-    end)
+    -- ปรับขนาดตามหน้าจออัตโนมัติ (Adaptive Size)
+    local cam = workspace.CurrentCamera
+    if cam then
+        table.insert(conns, cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            if not Window._adaptive then return end
+            local v, s = viewport(), Window._scale
+            local nw = math.min(main.Size.X.Offset, (v.X - 20) / s)
+            local nh = math.min(main.Size.Y.Offset, (v.Y - 20) / s)
+            main.Size = UDim2.fromOffset(nw, nh)
+            local x, y = clampPos(main.AbsolutePosition.X, main.AbsolutePosition.Y)
+            main.Position = UDim2.fromOffset(x, y)
+        end))
+    end
+
+    -- ตัวปรับแต่งหน้าตา (ใช้โดยหน้า Settings) -----------------------------------
+    function Window:SetScale(s) Window._scale = s; uiScale.Scale = s end
+    function Window:SetDim(on)
+        Window._dim = on
+        dim.Visible = on and main.Visible
+    end
+    function Window:SetTransparent(on)
+        main.BackgroundTransparency = on and .3 or 0
+        side.BackgroundTransparency = on and .3 or 0
+    end
+    function Window:SetDragStyle(s) Window._dragStyle = s end
+    function Window:SetAdaptive(on) Window._adaptive = on end
+    function Window:SetBackground(mode, id, opacity)
+        local img = id and id ~= "" and id or nil
+        bgImage.Visible = (mode == "Image" and img ~= nil)
+        if img then bgImage.Image = img end
+        bgImage.ImageTransparency = 1 - (opacity or 65) / 100
+    end
+
+    -- สภาพอากาศ (หิมะ / ซากุระ)
+    local weather = { kind = "None", mode = "Screen", parts = {} }
+    local function rebuildWeather()
+        for _, p in ipairs(weather.parts) do p.f:Destroy() end
+        table.clear(weather.parts)
+        if weather.kind == "None" then return end
+        local holder = weather.mode == "Screen" and weatherScreen or weatherWindow
+        local col = weather.kind == "Snow" and Color3.new(1, 1, 1) or Color3.fromRGB(255, 183, 197)
+        for _ = 1, 40 do
+            local s = math.random(3, 6)
+            local f = new("Frame", { Size = UDim2.fromOffset(s, s), BackgroundColor3 = col, BackgroundTransparency = .3 + math.random() * .4, BorderSizePixel = 0 }, holder)
+            corner(f, s, true)
+            table.insert(weather.parts, { f = f, x = math.random(), y = math.random(), v = 25 + math.random() * 45, d = (math.random() - .5) * 24 })
+        end
+    end
+    function Window:SetWeather(kind) weather.kind = kind; rebuildWeather() end
+    function Window:SetWeatherMode(mode) weather.mode = mode; rebuildWeather() end
+    table.insert(conns, RunService.Heartbeat:Connect(function(dt)
+        if #weather.parts == 0 then return end
+        local sz = weather.parts[1].f.Parent.AbsoluteSize
+        if sz.X <= 0 or sz.Y <= 0 then return end
+        for _, p in ipairs(weather.parts) do
+            p.y = p.y + p.v * dt / sz.Y
+            p.x = p.x + p.d * dt / sz.X
+            if p.y > 1 then p.y = -.02; p.x = math.random() end
+            if p.x > 1 then p.x = 0 elseif p.x < 0 then p.x = 1 end
+            p.f.Position = UDim2.fromScale(p.x, p.y)
+        end
+    end))
 
     -- Notify
-    local toasts = new("Frame", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -16, 1, -16), Size = UDim2.fromOffset(260, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, gui)
+    local toasts = new("Frame", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -16, 1, -16), Size = UDim2.fromOffset(260, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, ZIndex = 70 }, gui)
     new("UIListLayout", { Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Bottom, SortOrder = Enum.SortOrder.LayoutOrder }, toasts)
+    function Window:Notify(n)
+        n = n or {}
+        local t = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.card, ZIndex = 70 }, toasts)
+        corner(t, 10); stroke(t, C.pink); pad(t, 12, 10, 12, 10); list(t, 2)
+        label(t, { Text = n.Title or "", Size = UDim2.new(1, 0, 0, 16), Font = Enum.Font.GothamMedium, TextColor3 = C.pink, LayoutOrder = 0, ZIndex = 71 })
+        label(t, { Text = n.Content or "", Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 12, LayoutOrder = 1, ZIndex = 71 })
+        task.delay(n.Duration or 4, function() if t then t:Destroy() end end)
+    end
 
-    -- State
-    local Window = { Main = main, Gui = gui }
+    -- Tabs ---------------------------------------------------------------------
     local pages, order, navButtons, current = {}, {}, {}, nil
 
     local function applyFilter()
@@ -630,7 +1300,6 @@ function Library:CreateWindow(cfg)
         local iconStr = tostring(tcfg.Icon or "•")
         local ic
         if iconStr:find("^rbxasset") or tonumber(iconStr) then
-            -- Icon เป็นรูป: "rbxassetid://123456" หรือใส่เลขไอดีอย่างเดียวก็ได้
             ic = new("ImageLabel", {
                 Image = tonumber(iconStr) and ("rbxassetid://" .. iconStr) or iconStr,
                 Position = UDim2.fromOffset(12, 9), Size = UDim2.fromOffset(18, 18),
@@ -647,16 +1316,267 @@ function Library:CreateWindow(cfg)
         return tab
     end
 
-    function Window:Toggle() main.Visible = not main.Visible end
-    function Window:Destroy() gui:Destroy() end
+    --// หน้า Settings สำเร็จรูป (Menu / Configs / Themes) -----------------------
+    function Window:BuildSettings(tab)
+        local Cfg = Library.Config
+        Cfg:LoadSettings()
 
-    function Window:Notify(n)
-        n = n or {}
-        local t = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.card }, toasts)
-        corner(t, 10); stroke(t, C.pink); pad(t, 12, 10, 12, 10); list(t, 2)
-        label(t, { Text = n.Title or "", Size = UDim2.new(1, 0, 0, 16), Font = Enum.Font.GothamMedium, TextColor3 = C.pink, LayoutOrder = 0 })
-        label(t, { Text = n.Content or "", Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 12, LayoutOrder = 1 })
-        task.delay(n.Duration or 4, function() if t then t:Destroy() end end)
+        -- Anti AFK
+        local afkConn
+        local function setAntiAfk(on)
+            if afkConn then afkConn:Disconnect(); afkConn = nil end
+            if on then
+                afkConn = LP.Idled:Connect(function()
+                    local ok, VU = pcall(function() return game:GetService("VirtualUser") end)
+                    if ok and VU then
+                        VU:CaptureController()
+                        VU:ClickButton2(Vector2.new())
+                    end
+                end)
+                table.insert(conns, afkConn)
+            end
+        end
+
+        ------------------------------------------------------------ Menu
+        local Menu = tab:AddSection("Menu", { Side = "Left" })
+        Menu:AddKeybind("_az_togglekey", {
+            Title = "Toggle UI", Default = Window._toggleKey.Name,
+            Callback = function(n)
+                local ok, kc = pcall(function() return Enum.KeyCode[n] end)
+                if ok and kc then Window._toggleKey = kc end
+            end,
+        })
+        Menu:AddDropdown("_az_togglebtn", {
+            Title = "Toggle button", Values = { "Mobile only", "Always", "Never" }, Default = "Mobile only",
+            Callback = function(v) Window:SetToggleButton(v) end,
+        })
+        Menu:AddToggle("_az_antiafk", { Title = "Anti AFK", Default = true, Callback = setAntiAfk })
+        Menu:AddButtonRow({ { Title = "Unload", Callback = function() Library:Unload() end } }, 36)
+        Window:SetToggleButton("Mobile only")
+        setAntiAfk(true)
+
+        ------------------------------------------------------------ Configs
+        local Cf = tab:AddSection("Configs", { Side = "Left" })
+        local nameBox = Cf:AddInput("_az_cfgname", { Placeholder = "config name" })
+        local listDD = Cf:AddDropdown("_az_cfglist", { Values = {}, NoAutoSelect = true })
+        local status
+
+        local function updateStatus()
+            status:SetText("loaded: " .. (Cfg.Loaded or "none") .. "  |  autoload: " .. (Cfg:GetAutoload() or "none"))
+        end
+        local function refreshList(select)
+            local names = Cfg:List()
+            listDD:SetValues(names)
+            if select and table.find(names, select) then listDD:SetValue(select) end
+            updateStatus()
+        end
+        local function say(ok, err, okMsg)
+            Window:Notify({ Title = "Config", Content = ok and okMsg or err or "Error", Duration = 3 })
+        end
+        local function selected()
+            local n = listDD.Value
+            if not n then
+                Window:Notify({ Title = "Config", Content = "Select a config first", Duration = 3 })
+            end
+            return n
+        end
+
+        Cf:AddButtonRow({
+            { Title = "Create", Callback = function()
+                local name = Cfg.Clean(nameBox.Value)
+                local ok, err = Cfg:Create(name)
+                say(ok, err, "Created " .. name)
+                if ok then nameBox:SetValue("") end
+                refreshList(ok and name or nil)
+            end },
+            { Title = "Save", Callback = function()
+                local n = selected(); if not n then return end
+                local ok, err = Cfg:Save(n)
+                say(ok, err, "Saved " .. n)
+                updateStatus()
+            end },
+        }, 32)
+        Cf:AddButtonRow({
+            { Title = "Load", Callback = function()
+                local n = selected(); if not n then return end
+                local ok, err = Cfg:Load(n)
+                say(ok, err, "Loaded " .. n)
+                updateStatus()
+            end },
+            { Title = "Delete", Color = C.pink, Callback = function()
+                local n = selected(); if not n then return end
+                local ok, err = Cfg:Delete(n)
+                say(ok, err, "Deleted " .. n)
+                refreshList()
+            end },
+        }, 32)
+        Cf:AddButtonRow({
+            { Title = "Set autoload", Callback = function()
+                local n = selected(); if not n then return end
+                local ok, err = Cfg:SetAutoload(n)
+                say(ok, err, "Autoload: " .. n)
+                updateStatus()
+            end },
+            { Title = "Clear autoload", Callback = function()
+                Cfg:ClearAutoload()
+                say(true, nil, "Autoload cleared")
+                updateStatus()
+            end },
+        }, 32)
+        Cf:AddButtonRow({
+            { Title = "Rename", Callback = function()
+                local n = selected(); if not n then return end
+                local new = Cfg.Clean(nameBox.Value)
+                local ok, err = Cfg:Rename(n, new)
+                say(ok, err, "Renamed to " .. new)
+                if ok then nameBox:SetValue("") end
+                refreshList(ok and new or n)
+            end },
+            { Title = "Reset", Color = C.pink, Callback = function()
+                Cfg:Reset()
+                say(true, nil, "All options reset to default")
+                updateStatus()
+            end },
+        }, 32)
+
+        status = Cf:AddLabel("")
+        Cf:AddDropdown("_az_autoloadmode", {
+            Title = "Autoload mode", Values = { "All accounts", "This account" }, Default = Cfg.Mode,
+            Callback = function(v) Cfg.Mode = v; Cfg:SaveSettings(); updateStatus() end,
+        })
+        Cf:AddButton({ Title = "Refresh list", Callback = function() refreshList(listDD.Value) end })
+        Cf:AddDivider("share")
+        Cf:AddButton({ Title = "Copy code", Callback = function()
+            local code = Cfg:Export()
+            if setclipboard then
+                setclipboard(code)
+                say(true, nil, "Config code copied")
+            else
+                say(false, "Executor has no setclipboard")
+            end
+        end })
+        local codeBox = Cf:AddInput("_az_cfgcode", { Placeholder = "paste a config code..." })
+        Cf:AddButton({ Title = "Import code", Callback = function()
+            local nm = Cfg.Clean(nameBox.Value)
+            local ok, err = Cfg:Import(codeBox.Value, nm ~= "" and nm or nil)
+            say(ok, err, "Config imported")
+            if ok then codeBox:SetValue(""); refreshList(nm ~= "" and nm or nil) end
+        end })
+        refreshList()
+
+        ------------------------------------------------------------ Themes
+        local Th = tab:AddSection("Themes", { Side = "Right" })
+        local colors = presetColors("Rose")
+        local pickers = {}
+        local function applyTheme() Library:ApplyColors(colors) end
+        local function setAllPickers()
+            for k, p in pairs(pickers) do p:SetValue(colors[k], true) end
+        end
+        local function useColors(src)
+            for k, c in pairs(src) do colors[k] = c end
+            setAllPickers()
+            applyTheme()
+        end
+
+        Th:AddDropdown("_az_preset", {
+            Title = "Preset", Values = PresetOrder, Default = "Rose",
+            Callback = function(v) useColors(presetColors(v)) end,
+        })
+        Th:AddDropdown("_az_weather", { Title = "Weather", Values = { "None", "Snow", "Sakura" }, Default = "None", Callback = function(v) Window:SetWeather(v) end })
+        Th:AddDropdown("_az_weathermode", { Title = "Weather Mode", Values = { "Screen", "Window" }, Default = "Screen", Callback = function(v) Window:SetWeatherMode(v) end })
+        Th:AddToggle("_az_dim", { Title = "Dim", Default = false, Callback = function(v) Window:SetDim(v) end })
+        Th:AddToggle("_az_transparent", { Title = "Transparent", Default = false, Callback = function(v) Window:SetTransparent(v) end })
+        Th:AddDropdown("_az_dragstyle", { Title = "Drag Style", Values = { "Outline", "Live" }, Default = "Outline", Callback = function(v) Window:SetDragStyle(v) end })
+        Th:AddToggle("_az_adaptive", { Title = "Adaptive Size", Default = true, Callback = function(v) Window:SetAdaptive(v) end })
+        Th:AddSlider("_az_uiscale", { Title = "UI Scale", Min = 50, Max = 150, Default = 100, Suffix = "%", Callback = function(v) Window:SetScale(v / 100) end })
+        Th:AddSlider("_az_radius", { Title = "Corner Radius", Min = 0, Max = 20, Default = 10, Suffix = "px", Callback = function(v) Library:SetCornerRadius(v) end })
+
+        local bg = { mode = "None", id = "", opacity = 65 }
+        local function updateBg() Window:SetBackground(bg.mode, bg.id, bg.opacity) end
+        Th:AddDropdown("_az_bgmode", { Title = "Background", Values = { "None", "Image" }, Default = "None", Callback = function(v) bg.mode = v; updateBg() end })
+        Th:AddInput("_az_bgimage", {
+            Placeholder = "image id or rbxassetid",
+            Button = { Title = "Set", Callback = function(text)
+                text = tostring(text):gsub("%s", "")
+                if tonumber(text) then
+                    bg.id = "rbxassetid://" .. text
+                elseif text:find("^rbxasset") then
+                    bg.id = text
+                else
+                    Window:Notify({ Title = "Background", Content = "Use an image id (number) or rbxassetid://", Duration = 3 })
+                    return
+                end
+                updateBg()
+            end },
+        })
+        Th:AddSlider("_az_bgopacity", { Title = "Background Opacity", Min = 0, Max = 100, Default = 65, Suffix = "%", Callback = function(v) bg.opacity = v; updateBg() end })
+
+        local themeLabel
+        local themeBox
+        local themeDD
+        local function refreshThemes(select)
+            local names = Library.Themes:List()
+            themeDD:SetValues(names)
+            if select and table.find(names, select) then themeDD:SetValue(select) end
+            themeLabel:SetText("Default theme: " .. (Library.Themes:GetDefault() or "none"))
+        end
+        local function themeSay(msg) Window:Notify({ Title = "Theme", Content = msg, Duration = 3 }) end
+
+        themeBox = Th:AddInput("_az_themename", {
+            Placeholder = "theme name",
+            Button = { Title = "Create", Callback = function(text)
+                local name = Cfg.Clean(text)
+                local ok, err = Library.Themes:Save(name, colors)
+                if ok then themeSay("Created " .. name); themeBox:SetValue(""); refreshThemes(name) else themeSay(err) end
+            end },
+        })
+        themeDD = Th:AddDropdown("_az_themelist", { Title = "Theme", Values = {}, NoAutoSelect = true, EmptyText = "no themes" })
+        Th:AddButtonRow({
+            { Title = "Save", Callback = function()
+                local n = themeDD.Value
+                if not n then themeSay("Select a theme first") return end
+                Library.Themes:Save(n, colors); themeSay("Saved " .. n)
+            end },
+            { Title = "Load", Callback = function()
+                local n = themeDD.Value
+                if not n then themeSay("Select a theme first") return end
+                local c = Library.Themes:Load(n)
+                if c then useColors(c); themeSay("Loaded " .. n) else themeSay("Theme not found") end
+            end },
+        }, 32)
+        Th:AddButtonRow({
+            { Title = "Delete", Callback = function()
+                local n = themeDD.Value
+                if not n then themeSay("Select a theme first") return end
+                Library.Themes:Delete(n); themeSay("Deleted " .. n); refreshThemes()
+            end },
+            { Title = "Set Default", Callback = function()
+                local n = themeDD.Value
+                if not n then themeSay("Select a theme first") return end
+                Library.Themes:SetDefault(n); themeSay("Default theme: " .. n); refreshThemes(n)
+            end },
+        }, 32)
+        themeLabel = Th:AddLabel("")
+        Th:AddDivider("")
+
+        local pickerDefs = {
+            { "accent", "Accent" }, { "bg", "Background" }, { "surface", "Surface" }, { "text", "Text" }, { "muted", "Muted text" },
+        }
+        for _, d in ipairs(pickerDefs) do
+            local key = d[1]
+            pickers[key] = Th:AddColorPicker("_az_color_" .. key, {
+                Title = d[2], Default = colors[key],
+                Callback = function(c) colors[key] = c; applyTheme() end,
+            })
+        end
+        refreshThemes()
+
+        -- โหลดธีมเริ่มต้นที่ตั้งไว้
+        local def = Library.Themes:GetDefault()
+        if def then
+            local c = Library.Themes:Load(def)
+            if c then useColors(c) end
+        end
     end
 
     return Window
